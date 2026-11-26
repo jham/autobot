@@ -1,0 +1,4 @@
+/target
+autobot.toml
+autobot-state.json
+autobot-state.json.tmp

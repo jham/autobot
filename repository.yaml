@@ -1,0 +1,5 @@
+# Lets Home Assistant use this repo as an add-on repository:
+# Settings > Add-ons > Add-on Store > ⋮ > Repositories, then add the repo's URL.
+name: autobot
+url: https://github.com/jham/autobot
+maintainer: Jeff Hamilton

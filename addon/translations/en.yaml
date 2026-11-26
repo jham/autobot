@@ -1,0 +1,38 @@
+configuration:
+  outdoor:
+    name: Outdoor units
+    description: >-
+      One entry per outdoor unit. Give each an id (lower-case letters, digits and _) and
+      optionally a name and any timing setting that should differ from the defaults below.
+  unit:
+    name: Head units
+    description: >-
+      One entry per head unit with an esp105 board. "outdoor" is the id of the outdoor unit it is
+      piped to; "host" is the board's IP address; "encryption_key" is the api_encryption_key from
+      the board's secrets.yaml.
+  arbiter:
+    name: Timing defaults
+    description: >-
+      min_run_min (15), max_slice_min (40), idle_switch_delay_min (3), demand_ratio (2.0),
+      changeover_settle seconds (60), start_offset °C (0.5), dry_weight (0.5), idle_action (off).
+      See the Documentation tab.
+  tick:
+    name: Step interval
+    description: Seconds between decisions (default 10). Changes also trigger one straight away.
+  adopt_external:
+    name: Follow changes made at the head unit
+    description: Treat IR-remote and MELCloud changes as the new setting (default on).
+  adopt_after:
+    name: Settle time
+    description: Seconds after a command before the head unit's state counts as a user change (default 30).
+  auto_deadband:
+    name: AUTO setpoint gap
+    description: Minimum °C between the low and high setpoints in heat/cool mode (default 2).
+  min_temp:
+    name: Lowest setpoint
+    description: °C (default 16)
+  max_temp:
+    name: Highest setpoint
+    description: °C (default 31)
+  log_level:
+    name: Log level

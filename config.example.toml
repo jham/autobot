@@ -1,0 +1,59 @@
+# autobot configuration. Copy to autobot.toml (git-ignored) and fill in.
+# Temperatures are degrees Celsius. Times ending in _min are minutes, others are seconds.
+# The Home Assistant add-on takes the same options in its Configuration tab.
+
+# Seconds between arbiter steps. State changes from a head unit or Home Assistant also wake it.
+tick = 10
+# Where the virtual units' settings are saved, relative to this file.
+state_file = "autobot-state.json"
+# Treat changes made at a head unit (IR remote, MELCloud) as the user's new setting.
+adopt_external = true
+adopt_after = 30
+# Minimum gap between the low and high setpoints in AUTO (heat_cool).
+auto_deadband = 2.0
+min_temp = 16
+max_temp = 31
+# log_level = "info"   # or "debug"; RUST_LOG overrides it
+
+# Leave [mqtt] out when running as a Home Assistant add-on; the Supervisor supplies the broker.
+[mqtt]
+host = "homeassistant.local"
+port = 1883
+username = "autobot"
+password = "change-me"
+discovery_prefix = "homeassistant"
+base_topic = "autobot"
+
+# Defaults for every outdoor unit; any of these can be overridden in an [[outdoor]] entry.
+[arbiter]
+start_offset = 0.5        # degrees past a setpoint before a room calls
+min_run_min = 15          # shortest time on one side before switching while that side still calls
+max_slice_min = 40        # longest time on one side while the other side is waiting
+idle_switch_delay_min = 3 # current side satisfied this long + other side calling -> switch
+demand_ratio = 2.0        # switch after min_run if the other side calls this many times harder
+changeover_settle = 60    # seconds every unit is parked between heat and cool
+dry_weight = 0.5          # how hard a unit in DRY calls for cool
+idle_action = "off"       # what a unit that has to wait is set to: "off" or "fan"
+
+# One [[outdoor]] per outdoor unit.
+[[outdoor]]
+id = "upstairs"
+name = "Upstairs MXZ"
+# max_slice_min = 30
+
+# One [[unit]] per head unit, naming the outdoor unit it's piped to.
+[[unit]]
+id = "bedroom"
+name = "Bedroom"
+outdoor = "upstairs"
+host = "192.168.1.41"     # an IP address is safest; .local names need mDNS in the container
+encryption_key = "the api_encryption_key from that board's secrets.yaml"
+
+[[unit]]
+id = "office"
+name = "Office"
+outdoor = "upstairs"
+host = "192.168.1.42"
+encryption_key = "..."
+# port = 6053
+# climate = "heat_pump"   # only if the board has more than one climate entity

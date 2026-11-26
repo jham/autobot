@@ -13,10 +13,11 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
@@ -28,9 +29,17 @@ jobs:
           test "$cargo_v" = "$addon_v"
           if [ "${GITHUB_REF_TYPE}" = tag ]; then test "${GITHUB_REF_NAME}" = "v$cargo_v"; fi
 
+  addon-lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: frenck/action-addon-linter@v2
+        with:
+          path: ./addon
+
   # Add-on images, built natively per architecture. Pushed only for version tags.
   image:
-    needs: test
+    needs: [test, addon-lint]
     strategy:
       matrix:
         include:
@@ -43,17 +52,18 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - id: v
-        run: echo "version=$(sed -n 's/^version: "\(.*\)"/\1/p' addon/config.yaml)" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-buildx-action@v3
+        run: |
+          echo "version=$(sed -n 's/^version: "\(.*\)"/\1/p' addon/config.yaml)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v4
       - if: github.ref_type == 'tag'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           file: addon/Dockerfile
@@ -61,6 +71,25 @@ jobs:
             BUILD_ARCH=${{ matrix.arch }}
             BUILD_VERSION=${{ steps.v.outputs.version }}
           push: ${{ github.ref_type == 'tag' }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/autobot-${{ matrix.arch }}:${{ steps.v.outputs.version }}
             ghcr.io/${{ github.repository_owner }}/autobot-${{ matrix.arch }}:latest
+
+  # A GitHub Release for each version tag, with that version's notes from addon/CHANGELOG.md.
+  release:
+    if: github.ref_type == 'tag'
+    needs: image
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          awk -v v="$v" '$0 == "## " v {on=1; next} /^## / {on=0} on' addon/CHANGELOG.md > notes.md
+          test -s notes.md || { echo "addon/CHANGELOG.md has no '## $v' section"; exit 1; }
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag

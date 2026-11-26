@@ -8,7 +8,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY src src
 RUN cargo build --release --locked
 
-FROM alpine:3.22
+FROM alpine:3.24
 ARG BUILD_ARCH
 ARG BUILD_VERSION
 LABEL io.hass.type="addon" \

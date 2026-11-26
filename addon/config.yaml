@@ -9,8 +9,6 @@ arch:
 # Prebuilt by CI (.github/workflows/ci.yml); the Supervisor pulls it rather than building it.
 image: ghcr.io/jham/autobot-{arch}
 init: false
-startup: application
-boot: auto
 # mDNS (.local names) for the esp105 boards, and Matter later.
 host_network: true
 services:

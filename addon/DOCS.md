@@ -55,5 +55,7 @@ so starting autobot changes nothing.
 Put these under **Timing defaults** to change them everywhere. Put them in an outdoor unit's
 entry to change them just for that unit.
 
-Each outdoor unit also gets a **Mode** sensor (`heat`, `cool`, `changing to …`). Each head unit
-gets a **Waiting for outdoor unit** sensor.
+Each outdoor unit also gets a **Mode** sensor (`heat`, `cool`, `changing to …`) and, once a
+head unit reports one, an **Outside temperature** sensor. Each head unit gets a **Waiting for
+outdoor unit** sensor and a **Vertical vane** select (and **Horizontal vane**, disabled by
+default, for units that have one). Vane changes go straight to the head unit.

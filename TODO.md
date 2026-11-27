@@ -15,14 +15,16 @@ Open work as of 2026-11-26.
   `ghcr.io/jham/autobot-{amd64,aarch64}` and creates a GitHub Release. Then check that both GHCR
   packages are public (package settings on github.com), or the Supervisor can't pull them. CI
   already builds both images on every push, so the Dockerfile is known to work.
+- Check on real boards that cn105's vane select options and the outside temperature come
+  through, and that a climate command from autobot leaves the vane where it was.
 - Install the add-on on the real Home Assistant and check the entities, the settings form and
   the Supervisor MQTT lookup.
 
 ## Features
 
-- Mirror the boards' other entities (vertical and horizontal vane, outside air temperature,
-  compressor frequency, energy) so the boards can stay out of HA's ESPHome integration with
-  nothing lost.
+- Mirror the boards' remaining entities (compressor frequency, input power, energy, runtime
+  hours, stage, i-see) so the boards can stay out of HA's ESPHome integration with nothing
+  lost. Vanes and outside temperature are done.
 - Pass a remote room temperature sensor through to the board (cn105 supports one).
 - Save the arbiter's side and turn timer across restarts.
 - Optional per-unit priority weight (e.g. a nursery wins ties).

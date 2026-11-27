@@ -2,9 +2,11 @@
 //!
 //! Each virtual unit offers off / heat / cool / heat_cool / dry / fan_only. `heat_cool` is
 //! autobot's AUTO: a low and a high setpoint, with autobot choosing heat or cool in step with the
-//! rest of the outdoor unit. Each outdoor unit also gets a sensor showing which side it is on.
+//! rest of the outdoor unit. Each head unit also gets a select per vane its board has, passed
+//! straight through. Each outdoor unit gets a sensor showing which side it is on, and an outside
+//! temperature sensor once one of its head units reports one.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -13,10 +15,9 @@ use serde_json::json;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use crate::arbiter::StepResult;
 use crate::config::{Config, MqttConfig, OutdoorConfig, UnitConfig};
-use crate::model::Mode;
-use crate::service::{Change, Event, Frontend, VirtualState};
+use crate::model::{Mode, Vane};
+use crate::service::{Change, Event, Frontend, OutdoorState, VirtualState};
 
 const HA_MODES: [(Mode, &str); 6] = [
     (Mode::Off, "off"),
@@ -62,7 +63,7 @@ pub fn parse_command(base: &str, topic: &str, payload: &str) -> Option<(String, 
         "high" => Change::High(payload.parse().ok()?),
         "fan" => Change::Fan(payload.to_string()),
         "swing" => Change::Swing(payload.to_string()),
-        _ => return None,
+        other => Change::Vane(Vane::from_id(other)?, payload.to_string()),
     };
     Some((uid.to_string(), change))
 }
@@ -75,7 +76,19 @@ struct Publisher {
     min_temp: f64,
     max_temp: f64,
     published: HashMap<String, String>,
-    modes: BTreeMap<String, (Vec<String>, Vec<String>)>,
+    /// What each unit's discovery was last built from.
+    meta: BTreeMap<String, UnitMeta>,
+    /// Outdoor units whose outside temperature sensor has been announced.
+    outside: BTreeSet<String>,
+}
+
+/// The parts of a unit's state that its discovery messages depend on.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct UnitMeta {
+    fan_modes: Vec<String>,
+    swing_modes: Vec<String>,
+    /// Options and whether HA should enable it by default, per vane the board has.
+    vanes: BTreeMap<Vane, (Vec<String>, bool)>,
 }
 
 impl Publisher {
@@ -109,8 +122,10 @@ impl Publisher {
         let Some(oc) = self.outdoor.iter().find(|o| o.id == uc.outdoor).cloned() else {
             return;
         };
-        let (fan_modes, swing_modes) = self.modes.get(uid).cloned().unwrap_or_default();
-        let t = |p: &[&str]| self.t(&[&[uid], p].concat());
+        let meta = self.meta.get(uid).cloned().unwrap_or_default();
+        let (fan_modes, swing_modes) = (meta.fan_modes, meta.swing_modes);
+        let base = self.m.base_topic.clone();
+        let t = |p: &[&str]| [&[base.as_str(), uid], p].concat().join("/");
         let config = json!({
             "name": null,
             "unique_id": format!("autobot_{uid}"),
@@ -155,6 +170,46 @@ impl Publisher {
             format!("{p}/binary_sensor/autobot_{uid}_waiting/config"),
             waiting.to_string(),
         );
+        for (v, (options, enabled)) in meta.vanes {
+            let config = json!({
+                "name": v.label(),
+                "unique_id": format!("autobot_{uid}_{}", v.as_str()),
+                "device": {"identifiers": [format!("autobot_{uid}")]},
+                "availability": [{"topic": self.t(&["status"])}, {"topic": t(&["availability"])}],
+                "availability_mode": "all",
+                "options": options,
+                "state_topic": t(&[v.as_str()]),
+                "command_topic": t(&[v.as_str(), "set"]),
+                "enabled_by_default": enabled,
+                "icon": match v {
+                    Vane::Vertical => "mdi:arrow-up-down",
+                    Vane::Horizontal => "mdi:arrow-left-right",
+                },
+            });
+            self.put(
+                format!("{p}/select/autobot_{uid}_{}/config", v.as_str()),
+                config.to_string(),
+            );
+        }
+    }
+
+    fn discover_outside(&mut self, oid: &str) {
+        let config = json!({
+            "name": "Outside temperature",
+            "unique_id": format!("autobot_outdoor_{oid}_outside"),
+            "device": {"identifiers": [format!("autobot_outdoor_{oid}")]},
+            "availability": [{"topic": self.t(&["status"])}],
+            "state_topic": self.t(&["outdoor", oid, "outside"]),
+            "device_class": "temperature",
+            "state_class": "measurement",
+            "unit_of_measurement": "°C",
+            "suggested_display_precision": 1,
+        });
+        let p = self.m.discovery_prefix.clone();
+        self.put(
+            format!("{p}/sensor/autobot_outdoor_{oid}_outside/config"),
+            config.to_string(),
+        );
     }
 
     fn discover_outdoor(&mut self) {
@@ -185,7 +240,10 @@ impl Publisher {
     fn republish(&mut self) {
         self.published.clear();
         self.discover_outdoor();
-        for uid in self.modes.keys().cloned().collect::<Vec<_>>() {
+        for oid in self.outside.clone() {
+            self.discover_outside(&oid);
+        }
+        for uid in self.meta.keys().cloned().collect::<Vec<_>>() {
             self.discover_unit(&uid);
         }
     }
@@ -214,7 +272,8 @@ impl MqttHomeAssistant {
             min_temp: cfg.min_temp,
             max_temp: cfg.max_temp,
             published: HashMap::new(),
-            modes: BTreeMap::new(),
+            meta: BTreeMap::new(),
+            outside: BTreeSet::new(),
         }));
         let shared = p.clone();
         tokio::spawn(async move {
@@ -270,7 +329,8 @@ impl Frontend for MqttHomeAssistant {
     fn publish_unit(&mut self, uid: &str, s: &VirtualState) {
         let mut p = self.p.lock().expect("publisher");
         let r = &s.request;
-        let t = |field: &str| p.t(&[uid, field]);
+        let base = p.m.base_topic.clone();
+        let t = |field: &str| format!("{base}/{uid}/{field}");
         let topics = [
             (
                 t("availability"),
@@ -289,18 +349,41 @@ impl Frontend for MqttHomeAssistant {
                 if s.waiting { "ON" } else { "OFF" }.to_string(),
             ),
         ];
-        let modes = (s.fan_modes.clone(), s.swing_modes.clone());
-        if p.modes.get(uid) != Some(&modes) {
-            p.modes.insert(uid.to_string(), modes);
+        let meta = UnitMeta {
+            fan_modes: s.fan_modes.clone(),
+            swing_modes: s.swing_modes.clone(),
+            vanes: s
+                .vanes
+                .iter()
+                .map(|(v, sel)| (*v, (sel.options.clone(), !sel.disabled_by_default)))
+                .collect(),
+        };
+        if p.meta.get(uid) != Some(&meta) {
+            p.meta.insert(uid.to_string(), meta);
             p.discover_unit(uid);
         }
         for (topic, payload) in topics {
             p.put(topic, payload);
         }
+        for (v, sel) in &s.vanes {
+            if let Some(state) = &sel.state {
+                p.put(t(v.as_str()), state.clone());
+            }
+        }
     }
 
-    fn publish_outdoor(&mut self, oid: &str, r: &StepResult) {
+    fn publish_outdoor(&mut self, oid: &str, o: &OutdoorState) {
+        let r = o.result;
         let mut p = self.p.lock().expect("publisher");
+        if o.outside.is_some() && p.outside.insert(oid.to_string()) {
+            p.discover_outside(oid);
+        }
+        if p.outside.contains(oid) {
+            // "None" makes Home Assistant show the sensor as unknown.
+            let topic = p.t(&["outdoor", oid, "outside"]);
+            let payload = o.outside.map_or("None".into(), |v| format!("{v:.1}"));
+            p.put(topic, payload);
+        }
         let state = match (r.changing_to, r.side) {
             (Some(to), _) => format!("changing to {}", to.as_str()),
             (None, Some(side)) => side.as_str().to_string(),
@@ -345,7 +428,18 @@ mod tests {
             Some(("office".into(), Change::Fan("quiet".into())))
         );
         assert_eq!(
+            parse_command("autobot", "autobot/office/vertical_vane/set", "SWING"),
+            Some((
+                "office".into(),
+                Change::Vane(Vane::Vertical, "SWING".into())
+            ))
+        );
+        assert_eq!(
             parse_command("autobot", "autobot/office/mode/set", "bogus"),
+            None
+        );
+        assert_eq!(
+            parse_command("autobot", "autobot/office/bogus/set", "1"),
             None
         );
         assert_eq!(

@@ -4,6 +4,7 @@
 //! does. Add the boards to autobot instead of to Home Assistant's ESPHome integration: two
 //! controllers writing the same climate entity will fight.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -12,14 +13,23 @@ use esphome_client::EspHomeClient;
 use esphome_client::types::{
     ClimateAction, ClimateCommandRequest, ClimateFanMode, ClimateMode, ClimateStateResponse,
     ClimateSwingMode, DisconnectResponse, EspHomeMessage, ListEntitiesClimateResponse,
-    ListEntitiesRequest, PingRequest, SubscribeStatesRequest,
+    ListEntitiesRequest, PingRequest, SelectCommandRequest, SubscribeStatesRequest,
 };
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, warn};
 
 use crate::config::UnitConfig;
-use crate::model::{Action, Mode, UnitCommand, UnitReport};
+use crate::model::{Action, Extras, Mode, Select, UnitCommand, UnitReport, Vane};
 use crate::service::{Backend, Event};
+
+/// The board's outside air temperature sensor (cn105's `outside_air_temperature_sensor`).
+const OUTSIDE: &str = "outside_air_temperature";
+
+/// Whether a listed entity is the one called `want` (an ESPHome object_id such as
+/// "vertical_vane"). Newer ESPHome sends an empty object_id, so the name counts too.
+fn is_entity(object_id: &str, name: &str, want: &str) -> bool {
+    object_id == want || name.eq_ignore_ascii_case(want) || slug(name) == want
+}
 
 const PING_EVERY: Duration = Duration::from_secs(20);
 /// No message at all (states, pings, pongs) for this long means the connection is dead.
@@ -157,11 +167,17 @@ struct Modes {
     two_point: bool,
 }
 
+enum Command {
+    Climate(UnitCommand),
+    Vane(Vane, String),
+}
+
 /// One esp105 board. Keeps a connection open in a background task, reconnecting with backoff.
 pub struct EspHomeUnit {
     report: watch::Receiver<UnitReport>,
     modes: Arc<Mutex<Modes>>,
-    commands: mpsc::UnboundedSender<UnitCommand>,
+    extras: Arc<Mutex<Extras>>,
+    commands: mpsc::UnboundedSender<Command>,
 }
 
 impl EspHomeUnit {
@@ -176,10 +192,19 @@ impl EspHomeUnit {
             swing: ["off", "vertical"].map(String::from).to_vec(),
             two_point: false,
         }));
-        tokio::spawn(run(cfg, report_tx, command_rx, modes.clone(), wake));
+        let extras = Arc::new(Mutex::new(Extras::default()));
+        tokio::spawn(run(
+            cfg,
+            report_tx,
+            command_rx,
+            modes.clone(),
+            extras.clone(),
+            wake,
+        ));
         EspHomeUnit {
             report,
             modes,
+            extras,
             commands,
         }
     }
@@ -199,21 +224,48 @@ impl Backend for EspHomeUnit {
     }
 
     fn send(&mut self, cmd: &UnitCommand) -> bool {
-        self.report.borrow().available && self.commands.send(cmd.clone()).is_ok()
+        self.report.borrow().available && self.commands.send(Command::Climate(cmd.clone())).is_ok()
+    }
+
+    fn extras(&self) -> Extras {
+        self.extras.lock().expect("extras").clone()
+    }
+
+    fn set_vane(&mut self, vane: Vane, option: &str) -> bool {
+        let known = self
+            .extras
+            .lock()
+            .expect("extras")
+            .vanes
+            .get(&vane)
+            .is_some_and(|s| s.options.iter().any(|o| o == option));
+        known
+            && self.report.borrow().available
+            && self
+                .commands
+                .send(Command::Vane(vane, option.to_string()))
+                .is_ok()
     }
 }
 
 async fn run(
     cfg: UnitConfig,
     report: watch::Sender<UnitReport>,
-    mut commands: mpsc::UnboundedReceiver<UnitCommand>,
+    mut commands: mpsc::UnboundedReceiver<Command>,
     modes: Arc<Mutex<Modes>>,
+    extras: Arc<Mutex<Extras>>,
     wake: mpsc::UnboundedSender<Event>,
 ) {
     let mut delay = Duration::from_secs(5);
     loop {
         let mut connected = false;
-        match session(&cfg, &report, &mut commands, &modes, &wake, &mut connected).await {
+        let links = Links {
+            report: &report,
+            modes: &modes,
+            extras: &extras,
+            wake: &wake,
+        };
+        match session(&cfg, &links, &mut commands, &mut connected).await {
             Ok(()) => warn!("{}: disconnected", cfg.id),
             Err(e) => {
                 // esphome-client errors repeat their source in their message; show the ends only.
@@ -227,6 +279,14 @@ async fn run(
             }
         }
         report.send_replace(UnitReport::default());
+        {
+            // Keep the options, so the entities stay put while the board is away.
+            let mut x = extras.lock().expect("extras");
+            x.outside = None;
+            for s in x.vanes.values_mut() {
+                s.state = None;
+            }
+        }
         let _ = wake.send(Event::Wake);
         // Commands queued while the link was down are stale; the service resends what it wants.
         while commands.try_recv().is_ok() {}
@@ -240,14 +300,26 @@ async fn run(
     }
 }
 
+/// Where a session puts what it hears.
+struct Links<'a> {
+    report: &'a watch::Sender<UnitReport>,
+    modes: &'a Mutex<Modes>,
+    extras: &'a Mutex<Extras>,
+    wake: &'a mpsc::UnboundedSender<Event>,
+}
+
 async fn session(
     cfg: &UnitConfig,
-    report: &watch::Sender<UnitReport>,
-    commands: &mut mpsc::UnboundedReceiver<UnitCommand>,
-    modes: &Mutex<Modes>,
-    wake: &mpsc::UnboundedSender<Event>,
+    links: &Links<'_>,
+    commands: &mut mpsc::UnboundedReceiver<Command>,
     connected: &mut bool,
 ) -> Result<()> {
+    let Links {
+        report,
+        modes,
+        extras,
+        wake,
+    } = *links;
     let addr = format!("{}:{}", cfg.host, cfg.port);
     let mut client = EspHomeClient::builder()
         .address(&addr)
@@ -260,21 +332,48 @@ async fn session(
 
     client.try_write(ListEntitiesRequest {}).await?;
     let mut climates: Vec<ListEntitiesClimateResponse> = Vec::new();
+    // Select key -> vane, and the vanes' options.
+    let mut vane_keys: BTreeMap<u32, Vane> = BTreeMap::new();
+    let mut vanes: BTreeMap<Vane, Select> = BTreeMap::new();
+    let mut outside_key = None;
     loop {
         match tokio::time::timeout(Duration::from_secs(30), client.try_read())
             .await
             .context("listing entities")??
         {
             EspHomeMessage::ListEntitiesClimateResponse(c) => climates.push(c),
+            EspHomeMessage::ListEntitiesSelectResponse(s) => {
+                if let Some(v) = Vane::ALL
+                    .into_iter()
+                    .find(|v| is_entity(&s.object_id, &s.name, v.as_str()))
+                {
+                    vane_keys.insert(s.key, v);
+                    vanes.insert(
+                        v,
+                        Select {
+                            state: None,
+                            options: s.options,
+                            disabled_by_default: s.disabled_by_default,
+                        },
+                    );
+                }
+            }
+            EspHomeMessage::ListEntitiesSensorResponse(s)
+                if is_entity(&s.object_id, &s.name, OUTSIDE) =>
+            {
+                outside_key = Some(s.key);
+            }
             EspHomeMessage::ListEntitiesDoneResponse(_) => break,
             _ => {}
         }
     }
+    *extras.lock().expect("extras") = Extras {
+        vanes,
+        outside: None,
+    };
     if let Some(want) = &cfg.climate {
         // Newer ESPHome sends an empty object_id, so match the name too ("Heat pump" or "heat_pump").
-        climates.retain(|c| {
-            &c.object_id == want || c.name.eq_ignore_ascii_case(want) || slug(&c.name) == *want
-        });
+        climates.retain(|c| is_entity(&c.object_id, &c.name, want));
     }
     let [climate] = climates.as_slice() else {
         bail!(
@@ -337,6 +436,23 @@ async fn session(
                         report.send_replace(r);
                         let _ = wake.send(Event::Wake);
                     }
+                    EspHomeMessage::SelectStateResponse(s) => {
+                        let Some(v) = vane_keys.get(&s.key) else { continue };
+                        let state = (!s.missing_state).then_some(s.state);
+                        if let Some(sel) = extras.lock().expect("extras").vanes.get_mut(v) {
+                            sel.state = state;
+                        }
+                        let _ = wake.send(Event::Wake);
+                    }
+                    EspHomeMessage::SensorStateResponse(s) if Some(s.key) == outside_key => {
+                        let t = finite(s.state).filter(|_| !s.missing_state);
+                        let mut x = extras.lock().expect("extras");
+                        if x.outside != t {
+                            x.outside = t;
+                            drop(x);
+                            let _ = wake.send(Event::Wake);
+                        }
+                    }
                     EspHomeMessage::DisconnectRequest(_) => {
                         let _ = writer.try_write(DisconnectResponse {}).await;
                         return Ok(());
@@ -344,9 +460,16 @@ async fn session(
                     _ => {}
                 }
             }
-            Some(cmd) = commands.recv() => {
-                writer.try_write(command_to(key, &cmd)).await?;
-            }
+            Some(cmd) = commands.recv() => match cmd {
+                Command::Climate(cmd) => writer.try_write(command_to(key, &cmd)).await?,
+                Command::Vane(v, option) => {
+                    if let Some((&k, _)) = vane_keys.iter().find(|(_, x)| **x == v) {
+                        writer
+                            .try_write(SelectCommandRequest { key: k, state: option, ..Default::default() })
+                            .await?;
+                    }
+                }
+            },
             _ = ping.tick() => {
                 if last_heard.elapsed() > SILENCE_LIMIT {
                     bail!("no reply for {}s", SILENCE_LIMIT.as_secs());
@@ -388,6 +511,9 @@ mod tests {
     #[test]
     fn slugs_match_esphome() {
         assert_eq!(slug("Heat pump"), "heat_pump");
+        assert!(is_entity("", "Vertical vane", Vane::Vertical.as_str()));
+        assert!(is_entity("", "Outside air temperature", OUTSIDE));
+        assert!(!is_entity("", "Horizontal vane", Vane::Vertical.as_str()));
     }
 
     #[test]

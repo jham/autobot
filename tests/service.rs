@@ -1,27 +1,40 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use autobot::arbiter::StepResult;
 use autobot::config::Config;
-use autobot::model::{Action, Mode, UnitCommand, UnitReport};
-use autobot::service::{Backend, Change, Frontend, Service, VirtualState};
+use autobot::model::{Action, Extras, Mode, Select, UnitCommand, UnitReport, Vane};
+use autobot::service::{Backend, Change, Frontend, OutdoorState, Service, VirtualState};
+
+#[derive(Default)]
+struct FakeState {
+    report: UnitReport,
+    sent: Vec<UnitCommand>,
+    extras: Extras,
+    vanes_set: Vec<(Vane, String)>,
+}
 
 /// A head unit whose report the test sets and whose commands the test reads back.
 #[derive(Clone, Default)]
-struct Fake(Arc<Mutex<(UnitReport, Vec<UnitCommand>)>>);
+struct Fake(Arc<Mutex<FakeState>>);
 
 impl Fake {
     fn set(&self, r: UnitReport) {
-        self.0.lock().unwrap().0 = r;
+        self.0.lock().unwrap().report = r;
     }
     fn sent(&self) -> Vec<UnitCommand> {
-        self.0.lock().unwrap().1.clone()
+        self.0.lock().unwrap().sent.clone()
+    }
+    fn set_extras(&self, x: Extras) {
+        self.0.lock().unwrap().extras = x;
+    }
+    fn vanes_set(&self) -> Vec<(Vane, String)> {
+        self.0.lock().unwrap().vanes_set.clone()
     }
 }
 
 impl Backend for Fake {
     fn report(&self) -> UnitReport {
-        self.0.lock().unwrap().0.clone()
+        self.0.lock().unwrap().report.clone()
     }
     fn fan_modes(&self) -> Vec<String> {
         vec!["auto".into(), "low".into()]
@@ -30,19 +43,35 @@ impl Backend for Fake {
         vec!["off".into(), "vertical".into()]
     }
     fn send(&mut self, cmd: &UnitCommand) -> bool {
-        self.0.lock().unwrap().1.push(cmd.clone());
+        self.0.lock().unwrap().sent.push(cmd.clone());
+        true
+    }
+    fn extras(&self) -> Extras {
+        self.0.lock().unwrap().extras.clone()
+    }
+    fn set_vane(&mut self, vane: Vane, option: &str) -> bool {
+        self.0
+            .lock()
+            .unwrap()
+            .vanes_set
+            .push((vane, option.to_string()));
         true
     }
 }
 
 #[derive(Clone, Default)]
-struct Shown(Arc<Mutex<BTreeMap<String, VirtualState>>>);
+struct Shown(
+    Arc<Mutex<BTreeMap<String, VirtualState>>>,
+    Arc<Mutex<Option<f64>>>,
+);
 
 impl Frontend for Shown {
     fn publish_unit(&mut self, uid: &str, s: &VirtualState) {
         self.0.lock().unwrap().insert(uid.into(), s.clone());
     }
-    fn publish_outdoor(&mut self, _: &str, _: &StepResult) {}
+    fn publish_outdoor(&mut self, _: &str, o: &OutdoorState) {
+        *self.1.lock().unwrap() = o.outside;
+    }
 }
 
 struct Rig {
@@ -301,4 +330,58 @@ fn reconnecting_unit_gets_the_command_again_instead_of_being_adopted() {
         r.bedroom.sent()[1],
         UnitCommand::new(Mode::Heat, Some(20.0))
     );
+}
+
+#[test]
+fn vanes_pass_straight_through() {
+    let r = rig();
+    let mut svc = r.service();
+    r.bedroom
+        .set(report(Mode::Heat, Action::Heating, 19.0, Some(21.0)));
+    r.office
+        .set(report(Mode::Heat, Action::Idle, 21.0, Some(21.0)));
+    let vane = Select {
+        state: Some("AUTO".into()),
+        options: vec!["AUTO".into(), "1".into(), "SWING".into()],
+        disabled_by_default: false,
+    };
+    r.bedroom.set_extras(Extras {
+        vanes: [(Vane::Vertical, vane.clone())].into(),
+        outside: None,
+    });
+    svc.step(0.0);
+    let before = svc.requests["bedroom"].clone();
+    assert_eq!(
+        r.shown.0.lock().unwrap()["bedroom"].vanes[&Vane::Vertical],
+        vane
+    );
+    assert!(r.shown.0.lock().unwrap()["office"].vanes.is_empty());
+
+    svc.apply("bedroom", Change::Vane(Vane::Vertical, "SWING".into()));
+    assert_eq!(
+        r.bedroom.vanes_set(),
+        [(Vane::Vertical, "SWING".to_string())]
+    );
+    // Not part of the request, so not saved and not arbitrated.
+    assert_eq!(svc.requests["bedroom"], before);
+}
+
+#[test]
+fn outside_temperature_comes_from_a_connected_unit() {
+    let r = rig();
+    let mut svc = r.service();
+    r.bedroom
+        .set(report(Mode::Heat, Action::Heating, 19.0, Some(21.0)));
+    r.office
+        .set(report(Mode::Heat, Action::Idle, 21.0, Some(21.0)));
+    r.office.set_extras(Extras {
+        outside: Some(4.5),
+        ..Default::default()
+    });
+    svc.step(0.0);
+    assert_eq!(*r.shown.1.lock().unwrap(), Some(4.5));
+
+    r.office.set(UnitReport::default()); // office drops off the network
+    svc.step(10.0);
+    assert_eq!(*r.shown.1.lock().unwrap(), None);
 }

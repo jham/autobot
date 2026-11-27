@@ -97,7 +97,8 @@ Or build the add-on image and run it with `-c /config/autobot.toml`.
 
 **Either way, remove the esp105 boards from Home Assistant's ESPHome integration** (or never
 add them). Otherwise HA and autobot both write the same climate entity and override each other.
-The boards' other entities (vanes, sensors) aren't passed through yet; see [TODO.md](TODO.md).
+autobot passes through the vanes and the outside temperature. The boards' other sensors
+(compressor frequency, energy) aren't passed through yet; see [TODO.md](TODO.md).
 
 ## Tests
 

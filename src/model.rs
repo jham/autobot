@@ -159,3 +159,53 @@ impl UnitCommand {
         }
     }
 }
+
+/// One of a head unit's vane selects. Vanes pass straight through to the board; the arbiter
+/// never touches them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Vane {
+    Vertical,
+    Horizontal,
+}
+
+impl Vane {
+    pub const ALL: [Vane; 2] = [Vane::Vertical, Vane::Horizontal];
+
+    /// The board's entity id for it, also used in autobot's MQTT topics.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Vane::Vertical => "vertical_vane",
+            Vane::Horizontal => "horizontal_vane",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Vane::Vertical => "Vertical vane",
+            Vane::Horizontal => "Horizontal vane",
+        }
+    }
+
+    pub fn from_id(s: &str) -> Option<Vane> {
+        Vane::ALL.into_iter().find(|v| v.as_str() == s)
+    }
+}
+
+/// A select entity on the board.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Select {
+    /// The current option, if the board has reported one.
+    pub state: Option<String>,
+    pub options: Vec<String>,
+    /// The board marks it disabled by default (not every head unit has one).
+    pub disabled_by_default: bool,
+}
+
+/// What a board reports besides its climate entity. A vane missing from `vanes` means the board
+/// has no such select.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Extras {
+    pub vanes: std::collections::BTreeMap<Vane, Select>,
+    /// Outside air temperature, as the outdoor unit reports it through this head unit.
+    pub outside: Option<f64>,
+}

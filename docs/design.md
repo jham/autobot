@@ -94,11 +94,21 @@ For each head unit:
   swing passed through.
 - `binary_sensor.autobot_<id>_waiting`: on while the unit is calling but the outdoor unit is on
   the other side.
+- `select.autobot_<id>_vertical_vane` and `select.autobot_<id>_horizontal_vane`, for each vane
+  select the board has. Options and state are the board's, and changes go straight to the board.
+  Vanes don't change which side a unit needs, so the arbiter ignores them and autobot doesn't
+  save them. An entity the board marks disabled by default (esp105 does this for the horizontal
+  vane) starts disabled in Home Assistant too.
 
 For each outdoor unit:
 
 - A mode sensor: `heat`, `cool`, `changing to heat`, `changing to cool` or `undecided`. Its
   attributes are the heat and cool demand and the list of units waiting.
+- An outside temperature sensor, from the board's `Outside air temperature` sensor. Every head
+  unit on an outdoor unit reports the same reading, so autobot takes it from the first connected
+  unit that has one. The entity appears once a reading arrives, and shows unknown while no unit
+  reports one. On esp105 the board's sensor is disabled by default in Home Assistant, but the
+  board still reads it, so autobot gets it.
 
 All entities are retained MQTT discovery under `homeassistant/` (configurable). State is under
 `autobot/<id>/...`. A will message marks everything unavailable if autobot drops off the broker.

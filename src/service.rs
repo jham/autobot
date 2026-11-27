@@ -8,7 +8,7 @@ use tracing::{info, warn};
 
 use crate::arbiter::{GroupArbiter, StepResult, adopt_external};
 use crate::config::Config;
-use crate::model::{Action, Mode, UnitCommand, UnitReport, UnitRequest};
+use crate::model::{Action, Extras, Mode, Select, UnitCommand, UnitReport, UnitRequest, Vane};
 
 /// What a frontend shows for one virtual unit.
 #[derive(Clone, Debug, PartialEq)]
@@ -20,6 +20,16 @@ pub struct VirtualState {
     pub waiting: bool,
     pub fan_modes: Vec<String>,
     pub swing_modes: Vec<String>,
+    /// The vanes the board has. Passed through as the board reports them.
+    pub vanes: BTreeMap<Vane, Select>,
+}
+
+/// What a frontend shows for one outdoor unit.
+#[derive(Clone, Debug)]
+pub struct OutdoorState<'a> {
+    pub result: &'a StepResult,
+    /// Outside air temperature, from the first connected head unit that reports one.
+    pub outside: Option<f64>,
 }
 
 /// A head unit autobot can read and command.
@@ -29,12 +39,20 @@ pub trait Backend: Send {
     fn swing_modes(&self) -> Vec<String>;
     /// Send a command. Returns false if the head unit isn't connected.
     fn send(&mut self, cmd: &UnitCommand) -> bool;
+    /// Vanes and sensors besides the climate entity.
+    fn extras(&self) -> Extras {
+        Extras::default()
+    }
+    /// Set a vane. Returns false if the head unit isn't connected or has no such option.
+    fn set_vane(&mut self, _vane: Vane, _option: &str) -> bool {
+        false
+    }
 }
 
 /// Something that shows the virtual units to users (Home Assistant, Matter, ...).
 pub trait Frontend: Send {
     fn publish_unit(&mut self, uid: &str, state: &VirtualState);
-    fn publish_outdoor(&mut self, oid: &str, result: &StepResult);
+    fn publish_outdoor(&mut self, oid: &str, state: &OutdoorState);
 }
 
 /// A user change to one field of a virtual unit.
@@ -46,6 +64,8 @@ pub enum Change {
     High(f64),
     Fan(String),
     Swing(String),
+    /// Goes straight to the head unit: vanes don't affect which side a unit needs.
+    Vane(Vane, String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -167,6 +187,15 @@ impl Service {
         let Some(old) = self.requests.get(uid).cloned() else {
             return;
         };
+        if let Change::Vane(v, option) = change {
+            let be = self.backends.get_mut(uid).expect("backend");
+            if be.set_vane(v, &option) {
+                info!("{uid}: {} {option}", v.as_str());
+            } else {
+                warn!("{uid}: can't set {} to {option:?} now", v.as_str());
+            }
+            return;
+        }
         self.unseeded.remove(uid);
         let mut req = old.clone();
         let mut moved_low = false;
@@ -177,6 +206,7 @@ impl Service {
             Change::High(t) => req.high = t,
             Change::Fan(f) => req.fan = Some(f),
             Change::Swing(s) => req.swing = Some(s),
+            Change::Vane(..) => unreachable!("handled above"),
         }
         let req = self.normalize(req, moved_low);
         if req != old {
@@ -356,13 +386,23 @@ impl Service {
                     waiting: st.waiting,
                     fan_modes: be.fan_modes(),
                     swing_modes: be.swing_modes(),
+                    vanes: be.extras().vanes,
                 };
                 for f in &mut self.frontends {
                     f.publish_unit(uid, &vs);
                 }
             }
+            let state = OutdoorState {
+                result: &result,
+                outside: o
+                    .units
+                    .iter()
+                    .map(|u| &self.backends[u])
+                    .filter(|b| b.report().available)
+                    .find_map(|b| b.extras().outside),
+            };
             for f in &mut self.frontends {
-                f.publish_outdoor(&o.id, &result);
+                f.publish_outdoor(&o.id, &state);
             }
         }
     }

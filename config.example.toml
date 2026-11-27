@@ -35,25 +35,30 @@ changeover_settle = 60    # seconds every unit is parked between heat and cool
 dry_weight = 0.5          # how hard a unit in DRY calls for cool
 idle_action = "off"       # what a unit that has to wait is set to: "off" or "fan"
 
-# One [[outdoor]] per outdoor unit.
+# One [[outdoor]] per outdoor unit, with one [[outdoor.unit]] under it per head unit piped to it.
 [[outdoor]]
 id = "upstairs"
 name = "Upstairs MXZ"
 # max_slice_min = 30
 
-# One [[unit]] per head unit, naming the outdoor unit it's piped to.
-[[unit]]
+[[outdoor.unit]]
 id = "bedroom"
 name = "Bedroom"
-outdoor = "upstairs"
 host = "192.168.1.41"     # an IP address is safest; .local names need mDNS in the container
 encryption_key = "the api_encryption_key from that board's secrets.yaml"
 
-[[unit]]
+[[outdoor.unit]]
 id = "office"
 name = "Office"
-outdoor = "upstairs"
 host = "192.168.1.42"
 encryption_key = "..."
 # port = 6053
 # climate = "heat_pump"   # only if the board has more than one climate entity
+
+# A second outdoor unit would follow the same pattern:
+# [[outdoor]]
+# id = "downstairs"
+#
+# [[outdoor.unit]]
+# id = "living"
+# ...

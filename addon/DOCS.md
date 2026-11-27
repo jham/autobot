@@ -17,21 +17,21 @@ rest of the outdoor unit. When rooms want opposite things, it gives them turns.
 
 ## Configuration
 
-Add one entry under **Outdoor units** for each outdoor unit:
+Add one entry under **Outdoor units** for each outdoor unit, with its head units (one per
+esp105 board) listed under `unit`:
 
 ```yaml
 - id: upstairs
   name: Upstairs MXZ
-```
-
-Add one entry under **Head units** for each esp105 board:
-
-```yaml
-- id: bedroom
-  name: Bedroom
-  outdoor: upstairs
-  host: 192.168.1.41
-  encryption_key: <api_encryption_key from the board's secrets.yaml>
+  unit:
+    - id: bedroom
+      name: Bedroom
+      host: 192.168.1.41
+      encryption_key: <api_encryption_key from the board's secrets.yaml>
+    - id: office
+      name: Office
+      host: 192.168.1.42
+      encryption_key: <...>
 ```
 
 `host` can also be the board's `.local` name. An IP address (a DHCP reservation) is more

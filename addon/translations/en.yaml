@@ -2,14 +2,11 @@ configuration:
   outdoor:
     name: Outdoor units
     description: >-
-      One entry per outdoor unit. Give each an id (lower-case letters, digits and _) and
-      optionally a name and any timing setting that should differ from the defaults below.
-  unit:
-    name: Head units
-    description: >-
-      One entry per head unit with an esp105 board. "outdoor" is the id of the outdoor unit it is
-      piped to; "host" is the board's IP address; "encryption_key" is the api_encryption_key from
-      the board's secrets.yaml.
+      One entry per outdoor unit. Give each an id (lower-case letters, digits and _), optionally
+      a name and any timing setting that should differ from the defaults below, and a "unit" list
+      with one entry per head unit piped to it. Each head unit needs an id, a name, "host" (the
+      esp105 board's IP address) and "encryption_key" (the api_encryption_key from the board's
+      secrets.yaml).
   arbiter:
     name: Timing defaults
     description: >-

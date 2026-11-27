@@ -17,7 +17,7 @@ options:
   outdoor:
     - id: upstairs
       name: Upstairs
-  unit: []
+      unit: []
   arbiter: {}
 schema:
   outdoor:
@@ -31,14 +31,13 @@ schema:
       changeover_settle: float(0,600)?
       dry_weight: float(0.1,10)?
       idle_action: list(off|fan)?
-  unit:
-    - id: match(^[a-z0-9_]+$)
-      name: str
-      outdoor: match(^[a-z0-9_]+$)
-      host: str
-      port: port?
-      encryption_key: password
-      climate: str?
+      unit:
+        - id: match(^[a-z0-9_]+$)
+          name: str
+          host: str
+          port: port?
+          encryption_key: password
+          climate: str?
   arbiter:
     start_offset: float(0,5)?
     min_run_min: float(1,240)?

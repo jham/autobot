@@ -110,10 +110,12 @@ fn bad_config_is_rejected() {
     let r = rig();
     let text = std::fs::read_to_string(&r.path).unwrap();
     for (from, to) in [
+        // The outdoor unit is implied by nesting, so naming it is an unknown field.
         (
+            "host = \"192.168.1.42\"",
             "outdoor = \"upstairs\"\nhost = \"192.168.1.42\"",
-            "outdoor = \"downstairs\"\nhost = \"192.168.1.42\"",
         ),
+        ("id = \"office\"", "id = \"bedroom\""),
         ("max_slice_min = 40", "max_slice_min = 5"),
         ("demand_ratio = 2.0", "demand_ratio = 2.0\nbogus = 1"),
         ("id = \"office\"", "id = \"Office\""),
@@ -140,14 +142,18 @@ fn outdoor_overrides_apply() {
 #[test]
 fn json_options_load() {
     let r = rig();
-    let json = r#"{"outdoor": [{"id": "up", "max_slice_min": 30}],
-                   "unit": [{"id": "a", "name": "A", "outdoor": "up", "host": "10.0.0.2", "encryption_key": "k"}]}"#;
+    let json = r#"{"outdoor": [{"id": "up", "max_slice_min": 30,
+                   "unit": [{"id": "a", "name": "A", "host": "10.0.0.2", "encryption_key": "k"}]}]}"#;
     let path = r.path.with_file_name("options.json");
     std::fs::write(&path, json).unwrap();
     let cfg = Config::load(&path).unwrap();
     assert_eq!(
-        (cfg.outdoor[0].arbiter.max_slice, cfg.units["a"].port),
-        (1800.0, 6053)
+        (
+            cfg.outdoor[0].arbiter.max_slice,
+            cfg.units["a"].port,
+            cfg.units["a"].outdoor.as_str()
+        ),
+        (1800.0, 6053, "up")
     );
     assert!(cfg.mqtt.is_none());
 }

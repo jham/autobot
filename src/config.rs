@@ -1,7 +1,7 @@
 //! Configuration. Standalone installs use a TOML file (see `config.example.toml`); the Home
 //! Assistant add-on gets the same structure as JSON in `/data/options.json`.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -72,6 +72,9 @@ struct RawOutdoor {
     name: Option<String>,
     #[serde(flatten)]
     arbiter: ArbiterOverrides,
+    /// The head units piped to this outdoor unit.
+    #[serde(default)]
+    unit: Vec<UnitConfig>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -79,7 +82,9 @@ struct RawOutdoor {
 pub struct UnitConfig {
     pub id: String,
     pub name: String,
-    /// Id of the `[[outdoor]]` this head unit is piped to.
+    /// Id of the outdoor unit this head unit is piped to. Not written in the config file: the
+    /// unit's entry sits inside its outdoor unit's entry, and the loader fills this in.
+    #[serde(skip)]
     pub outdoor: String,
     /// IP address or host name of the esp105 board.
     pub host: String,
@@ -111,8 +116,6 @@ struct RawConfig {
     arbiter: ArbiterOverrides,
     #[serde(default)]
     outdoor: Vec<RawOutdoor>,
-    #[serde(default)]
-    unit: Vec<UnitConfig>,
 }
 
 #[derive(Clone, Debug)]
@@ -165,7 +168,7 @@ impl Config {
     fn from_raw(raw: RawConfig, base: &Path) -> Result<Config> {
         let defaults = raw.arbiter.apply(&ArbiterConfig::default());
         let mut outdoor = Vec::new();
-        let mut ids = BTreeSet::new();
+        let mut units = BTreeMap::new();
         for o in raw.outdoor {
             if !valid_id(&o.id) {
                 bail!(
@@ -173,38 +176,36 @@ impl Config {
                     o.id
                 );
             }
-            if !ids.insert(o.id.clone()) {
+            if outdoor.iter().any(|p: &OutdoorConfig| p.id == o.id) {
                 bail!("outdoor id {:?} is used twice", o.id);
             }
             let arbiter = o.arbiter.apply(&defaults);
             arbiter
                 .validate()
                 .map_err(|e| anyhow::anyhow!("outdoor {:?}: {e}", o.id))?;
+            if o.unit.is_empty() {
+                bail!("outdoor unit {:?} has no head units", o.id);
+            }
+            let mut ids = Vec::new();
+            for mut u in o.unit {
+                if !valid_id(&u.id) {
+                    bail!("unit id {:?}: use lower-case letters, digits and _", u.id);
+                }
+                u.outdoor = o.id.clone();
+                ids.push(u.id.clone());
+                if let Some(prev) = units.insert(u.id.clone(), u) {
+                    bail!("unit id {:?} is used twice", prev.id);
+                }
+            }
             outdoor.push(OutdoorConfig {
                 name: o.name.unwrap_or_else(|| o.id.clone()),
                 id: o.id,
                 arbiter,
-                units: vec![],
+                units: ids,
             });
         }
         if outdoor.is_empty() {
             bail!("no outdoor units configured");
-        }
-        let mut units = BTreeMap::new();
-        for u in raw.unit {
-            if !valid_id(&u.id) {
-                bail!("unit id {:?}: use lower-case letters, digits and _", u.id);
-            }
-            let Some(o) = outdoor.iter_mut().find(|o| o.id == u.outdoor) else {
-                bail!("unit {:?}: no outdoor unit with id {:?}", u.id, u.outdoor);
-            };
-            o.units.push(u.id.clone());
-            if units.insert(u.id.clone(), u.clone()).is_some() {
-                bail!("unit id {:?} is used twice", u.id);
-            }
-        }
-        if let Some(o) = outdoor.iter().find(|o| o.units.is_empty()) {
-            bail!("outdoor unit {:?} has no head units", o.id);
         }
         let state_file = raw
             .state_file

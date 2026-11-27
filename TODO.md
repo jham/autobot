@@ -11,10 +11,10 @@ Open work as of 2026-11-26.
     `min_run`, `max_slice` and `changeover_settle` to suit.
   - Check how the outdoor unit reacts to a changeover with every head unit parked OFF versus
     FAN. Pick the default `idle_action` from that.
-- Create the GitHub repo (`jham/autobot` is assumed in `repository.yaml`, `addon/config.yaml`
-  and `addon/Dockerfile`), push, and tag `v0.1.0` so CI publishes the add-on images. The
-  Dockerfile hasn't been built yet (no Docker on the development Mac); the first CI run is its
-  first build.
+- Once it has run on real boards, tag `v0.1.0` so CI publishes the add-on images to
+  `ghcr.io/jham/autobot-{amd64,aarch64}` and creates a GitHub Release. Then check that both GHCR
+  packages are public (package settings on github.com), or the Supervisor can't pull them. CI
+  already builds both images on every push, so the Dockerfile is known to work.
 - Install the add-on on the real Home Assistant and check the entities, the settings form and
   the Supervisor MQTT lookup.
 

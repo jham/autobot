@@ -81,8 +81,8 @@ cp config.example.toml autobot.toml
 
 Edit `autobot.toml`:
 - Add one `[[outdoor]]` per outdoor unit.
-- Add one `[[unit]]` per head unit, naming its outdoor unit. Each unit needs its board's address
-  and `api_encryption_key`.
+- Under each, add one `[[outdoor.unit]]` per head unit piped to it. Each unit needs its board's
+  address and `api_encryption_key`.
 - Fill in `[mqtt]` with your broker's details.
 
 ```bash
